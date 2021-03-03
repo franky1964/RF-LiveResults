@@ -6,7 +6,8 @@ import xml.etree.ElementTree as xmlElementTree
 from distutils.util import strtobool
 from robot.libraries.BuiltIn import BuiltIn
 
-__version__ = '4.2'
+__version__ = '4.3'
+HTML_MESSAGE_PREFIX = "*HTML*"
 
 class LiveResults:
     """|
@@ -56,6 +57,7 @@ run:
         self.totalTime = "00:00"
         self.runStartTime = ""
         self.topSuite = ""
+        self.rfVersion = ""
         self.refresh = refresh
         self.refreshTimer = "http-equiv='refresh' content='" + str(refresh) + "'"
         self.refreshStopped = "http-equiv='refresh' content='5000'"
@@ -102,10 +104,11 @@ run:
             <tr style="text-align:center">
                <th>Log File:</th>
                <th>Report File:</th>
+               <th>RF Version:</th>
                <th>Suite Name:</th>
                <th>Total Time:</th>
-               <th>Tests to be executed:</th>
-               <th>Test already executed:</th>
+               <th>Tests to execute:</th>
+               <th>Tests executed:</th>
                <th>Tests Skipped:</th>
                <th>Tests Blocked:</th>
                <th>Tests Passed:</th>
@@ -116,6 +119,7 @@ run:
             <tr style="text-align:center">
                <td><b>__logFile__</b></td>
                <td><b>__reportFile__</b></td>
+               <td><b>__rfVersion__</b></td>
                <td><b>__suiteName__</b></td>
                <td><b>__totalTime__</b></td>
                <td><b>__expected__</b></td>
@@ -180,8 +184,8 @@ run:
             self.suite_name = suite.name
 
     def start_test(self, data, test):
-       self.test_start_time = _get_current_date_time('%Y-%m-%d %H:%M:%S.%f',True)
-       if self.makeVideo:
+        self.test_start_time = _get_current_date_time('%Y-%m-%d %H:%M:%S.%f',True)
+        if self.makeVideo:
             self.test_case_name = str(test)
             self.screencaplib.set_screenshot_directory(self.videoPath)
             self.screencaplib.start_video_recording(name=str(self.test_case_name))
@@ -217,6 +221,10 @@ run:
                 self.skipped = self.skipped + 1
                 statusColor = self.statusColors['blue']
                 status = 'SKIP'
+            #Remove '*HTML*' from test.mesage
+            testMessage = test.message
+            if testMessage.startswith(HTML_MESSAGE_PREFIX):
+                testMessage = testMessage.lstrip(HTML_MESSAGE_PREFIX)
             #statusLink = "<a href='file:///" + self.logFile + "#" + test.id + "' target='_blank'>" + status + "</a>"
             statusLink = "<a href='" + self.logFile + "#" + test.id + "' target='_blank'>" + status + "</a>"
             hasSetup = "yes" if (data.setup) else "no"
@@ -228,16 +236,16 @@ run:
                 self.screencaplib.stop_video_recording()
             test_detail_message = """
                <tr>
-                  <td style="text-align: left;max-width: 70px;">%s</td>
-                  <td style="text-align: left;max-width: 70px;">%s</td>
+                  <td style="text-align: left;max-width: 60px;">%s</td>
+                  <td style="text-align: left;max-width: 60px;">%s</td>
                   <td style="text-align: left;max-width: 190px;">%s</td>
-                  <td style="text-align: left;max-width: 210px;">%s</td>
+                  <td style="text-align: left;max-width: 230px;">%s</td>
                   <td style="text-align: left;max-width: 140px;">%s</td>
                   <td style="text-align: center;">%s</td>
                   <td bgcolor='%s' style="text-align: center;">%s</td>
                   <td style="text-align: left;max-width: 250px;">%s</td>
                </tr>
-            """ %(str(self.test_start_time), str(self.elapsed), str(self.suite_name), str(test), str(tags), str(detailsLink), str(statusColor), str(statusLink), str(test.message))
+            """ %(str(self.test_start_time), str(self.elapsed), str(self.suite_name), str(test), str(tags), str(detailsLink), str(statusColor), str(statusLink), str(testMessage))
             self.content += test_detail_message
             _update_content(self, self.html_text, self.RF_LIVE_LOGGING_RUNNING_TITLE)
 
@@ -280,7 +288,7 @@ def _add_result_links(self, content, logFile, reportFile):
     #change if new pages should be opened
     #linkToReportFile = """<a href=""" + reportFile.replace(' ', '%20') + """ target='_blank'>Report</a>"""
     #linkToLogFile = """<a href=""" + logFile.replace(' ', '%20') + """ target='_blank'>Log</a>"""
-    _add_pass_rates(self.outputFile)
+    _add_pass_rates(self)
     linkToReportFile = "<a href='" + self.reportFile + "'>Report</a>"
     linkToLogFile = "<a href='" + self.logFile + "'>Log</a>"
     print ("LiveResults - Link to Log file: " + linkToLogFile)
@@ -289,20 +297,24 @@ def _add_result_links(self, content, logFile, reportFile):
     updated_content = updated_content.replace("__reportFile__", linkToReportFile)
     updated_content = updated_content.replace("__suiteName__", self.topSuite)
     updated_content = updated_content.replace("__totalTime__", self.totalTime)
+    updated_content = updated_content.replace("__rfVersion__", self.rfVersion)
     return updated_content
 
-def _add_pass_rates(path):  # Listener that parses the output XML when it is ready
+def _add_pass_rates(self):  # Listener that parses the output XML when it is ready
     """Additional lines to STDOUT, can be used for grep (or Jenkins with 'description-setter plugin')"""
-    root = xmlElementTree.parse(path).getroot()
+    root = xmlElementTree.parse(self.outputFile).getroot()
+    self.rfVersion = root.attrib.get('generator')
     for type_tag in root.findall('./statistics/total/stat'):
         cntPassed = int(type_tag.attrib.get("pass"))  # attrib is dict-like (except for 'text')
         cntFailed = int(type_tag.attrib.get("fail"))
+        cntSkipped = int(type_tag.attrib.get("skip"))
         cntTests = cntPassed + cntFailed
         #changed since the value for 'cntTests' in case of 'Critical Tests' could be '0'
         if cntTests > 0:
             pct_pass = cntPassed / cntTests * 100
-            fmt_str = "{}: {} tests, {} passed, {} failed, {:.3g}% pass rate (--listener LiveResults)"
-            print(fmt_str.format(type_tag.text, cntTests, cntPassed, cntFailed, pct_pass))
+            fmt_str = "{}: {} tests, {} passed, {} failed, {} skipped, {:.3g}% pass rate (--listener LiveResults)"
+            print(fmt_str.format(type_tag.text, cntTests, cntPassed, cntFailed, cntSkipped, pct_pass))
 
 def _open_liveLogs(self, filepath):
     webbrowser.open_new_tab(filepath)
+
